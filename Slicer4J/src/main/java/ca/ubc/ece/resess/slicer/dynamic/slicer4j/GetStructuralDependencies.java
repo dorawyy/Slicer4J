@@ -13,31 +13,84 @@ import soot.*;
 import soot.options.Options;
 import soot.util.Chain;
 
-public class getStaticGraph {
+public class GetStructuralDependencies {
 
     private static final Path root = Paths.get(".", "Slicer4J").normalize().toAbsolutePath();
     private static final Path slicerPath = Paths.get(root.toString(), "scripts");
-    private static final Path outDir = Paths.get(slicerPath.toString(), "testTempDir");
+    private static final Path outDir = Paths.get(slicerPath.toString(), "output");
     private static final Path sliceLogger = Paths.get(root.getParent().toString(),   File.separator + "DynamicSlicingCore" + File.separator + "DynamicSlicingLoggingClasses" + File.separator + "DynamicSlicingLogger.jar");
 
+
+    public GetStructuralDependencies() {}
+
+
     public static void main(String[] args) throws Exception {
-        if(args.length != 2) {
-            System.out.println("Usage: java ca.ubc.ece.resess.slicer.dynamic.slicer4j.getStaticGraph <path-to-app-jar> <output-static-graph-file-name>");
+        if(args.length != 3) {
+            System.out.println("Usage: java ca.ubc.ece.resess.slicer.dynamic.slicer4j.getStaticGraph <path-to-app-jar> <output-static-graph-file-name> <s|d|both>");
+            System.exit(0);
         }
 
-        //Path testPath = Paths.get(root.toString(), "benchmarks"); // Slicer4J benchmarks dir
-        String jarPath = Paths.get(args[0]).toString(); // path to application jar
+        // read input 
+        String appJar = Paths.get(args[0]).toString(); // path to application jar 
+        String outFile = args[1]; // static dependency output file
+        String analysisType = args[2]; // flag if to extract static dependency, dynamic dependency, or both
+        int analysisFlag = -1; 
+        if (analysisType.toLowerCase().equals("s") || analysisType.toLowerCase().equals("static")) {
+            analysisFlag = 1;
+        }
+        else if (analysisType.toLowerCase().equals("d") || analysisType.toLowerCase().equals("dynamic")) {
+            analysisFlag = 2;
+        }
+        else if (analysisType.toLowerCase().equals("b") || analysisType.toLowerCase().equals("both")) {
+            analysisFlag = 3;
+        }
+        else {
+            System.out.println("Unrecognizable analysis option. The only valid options are: 's' for extracting static dependency, 'd' for generate instrumented app for further use, 'b' for both exacting static dependency and generating instrumented app for further dynamic dependency extraction.");
+            System.exit(0);
+        }
 
-        //DependencyExtractor.buildJar(testPath);
+        // setup slicer4j
+        Slicer slicer = setupSlicing(root, appJar, outDir, sliceLogger);
+        slicer.prepare();
 
-        Slicer slicer = setupSlicing(root, jarPath, outDir, sliceLogger);
+        if (analysisFlag == 1 || analysisFlag == 3){
+            // generate and output static structural dependnecy 
+            HashMap<String, HashMap<String, Integer>> staticGraph = analyzeStaticDependencies();  
+            writeStaticDependencies(outFile, staticGraph);
+        }
+        if(analysisFlag == 2 || analysisFlag == 3){
+            // dynamic dependency, produce instrumented application 
+            slicer.instrument();
+            System.out.println("the instrumented application is generated!");
+        }
+    }
+
+    public static Slicer setupSlicing(Path root, String jarPath, Path outDir, Path sliceLogger) {
+        Slicer slicer = new Slicer();
+        slicer.setPathJar(jarPath);
+        slicer.setOutDir(outDir.toString()); // application dir 
+        slicer.setLoggerJar(sliceLogger.toString());
+
+        slicer.setFileToParse(outDir + File.separator + "trace.log");
+        slicer.setStubDroidPath(root.toString() + File.separator + "models" + File.separator + "summariesManual");
+        slicer.setTaintWrapperPath(root.toString() + File.separator + "models" + File.separator + "EasyTaintWrapperSource.txt");
+        
         slicer.setDebug(true);
-        slicer.instrument();
-        prepare(jarPath);
-        HashMap<String, HashMap<String, Integer>> staticGraph = analyzeStaticDependencies();
 
+        return slicer;
+    }
+
+    
+
+    /***
+     * write the input static graph to the given outFile
+     * @param outFile
+     * @param staticGraph
+     */
+    public static void writeStaticDependencies(String outFile, HashMap<String, HashMap<String, Integer>> staticGraph){
+        System.out.printf("Start writing Static Graph to file %s...\n", outFile);
         try {
-            FileWriter myWriter = new FileWriter(args[1]);
+            FileWriter myWriter = new FileWriter(outFile);
             for(String callerClass : staticGraph.keySet()) {
                 for(String calleeClass : staticGraph.get(callerClass).keySet()) {
                     myWriter.write(callerClass + "," + calleeClass + "," + staticGraph.get(callerClass).get(calleeClass).toString() + "\n");
@@ -52,13 +105,13 @@ public class getStaticGraph {
         System.out.println("Finished writing Static Graph...\n");
     }
 
+
     public static HashMap<String, HashMap<String, Integer>> analyzeStaticDependencies() {
         Chain<SootClass> chain = Scene.v().getApplicationClasses();
         return getStaticDependencies(chain);
     }
 
     protected static HashMap<String, HashMap<String, Integer>> getStaticDependencies(Chain<SootClass> chain) {
-        Map<String, SootMethod> allMethods = new HashMap<>();
         Iterator<SootClass> iterator = chain.snapshotIterator();
         HashMap<String, HashMap<String, Integer>> staticDependencies = new HashMap<String, HashMap<String, Integer>>();
         while (iterator.hasNext()) {
@@ -127,7 +180,7 @@ public class getStaticGraph {
                 } catch (Exception ex) {
                     continue;
                 }
-                PatchingChain<Unit> units = b.getUnits();
+                soot.PatchingChain<Unit> units = b.getUnits();
                 for( Unit unit : units) {
                     List<ValueBox> valBoxes = unit.getDefBoxes();
                     for(ValueBox val : valBoxes) {
@@ -145,44 +198,4 @@ public class getStaticGraph {
         return staticDependencies;
     }
 
-    public static void prepare(String pathJar) throws Exception {
-        if (pathJar.endsWith(".jar")) {
-            prepareProcessingJAR(pathJar);
-        } else {
-            throw new Exception("Not a jar file!");
-        }
-    }
-
-    private static void prepareProcessingJAR(String pathJar) {
-        soot.G.reset();
-        Options.v().set_prepend_classpath(true);
-        // Options.v().set_soot_classpath("VIRTUAL_FS_FOR_JDK");
-        String [] excList = {"org.slf4j.impl.*"};
-        List<String> excludePackagesList = Arrays.asList(excList);
-        Options.v().set_exclude(excludePackagesList);
-        Options.v().set_no_bodies_for_excluded(true);
-        Options.v().set_allow_phantom_refs(true);
-        Options.v().set_process_dir(Arrays.asList(pathJar));
-        Options.v().set_output_format(Options.output_format_jimple);
-        Options.v().set_keep_line_number(true);
-
-        // Options.v().set_whole_program(true);
-        // Options.v().set_allow_phantom_refs(true);
-        // Options.v().setPhaseOption("cg.spark", "on");
-        Options.v().setPhaseOption("jb", "use-original-names:true");
-        Scene.v().loadNecessaryClasses();
-        PackManager.v().runPacks();
-    }
-
-    public static Slicer setupSlicing(Path root, String jarPath, Path outDir, Path sliceLogger) {
-        Slicer slicer = new Slicer();
-        slicer.setPathJar(jarPath);
-        slicer.setOutDir(outDir.toString());
-        slicer.setLoggerJar(sliceLogger.toString());
-
-        slicer.setFileToParse(outDir + File.separator + "trace.log");
-        slicer.setStubDroidPath(root.toString() + File.separator + "models" + File.separator + "summariesManual");
-        slicer.setTaintWrapperPath(root.toString() + File.separator + "models" + File.separator + "EasyTaintWrapperSource.txt");
-        return slicer;
-    }
 }
